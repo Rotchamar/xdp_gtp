@@ -12,7 +12,7 @@ struct
 {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
   __type(key, __u32);
-  __type(value, usage_stats);
+  __type(value, struct usage_stats);
   __uint(max_entries, 2);
 } rxcnt SEC(".maps");
 
@@ -28,7 +28,7 @@ struct
 {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
-  __type(value, upf_addrs);
+  __type(value, struct upf_addrs);
   __uint(max_entries, 256);
 } upf_map SEC(".maps"); // IP addrs in network byte order
 
@@ -36,7 +36,7 @@ struct
 {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
-  __type(value, client_info);
+  __type(value, struct client_info);
   __uint(max_entries, 256);
 } client_map SEC(".maps"); // IP addrs in network byte order
 
@@ -58,8 +58,8 @@ static __always_inline __u32
 encapsulate_gtp(struct xdp_md* ctx,
                 struct ethhdr* eth,
                 struct iphdr* iphdr,
-                client_info* client_inf,
-                upf_addrs* upf_addrs)
+                struct client_info* client_inf,
+                struct upf_addrs* upf_addrs)
 {
   struct udphdr* udphdr;
   struct gtphdr* gtphdr;
@@ -133,7 +133,7 @@ pop_gtp(struct xdp_md* ctx,
 {
   struct ethhdr* newethhdr;
   struct gtphdr* gtphdr;
-  client_info* client_inf;
+  struct client_info* client_inf;
   __s32 len;
   __s32 num_bytes_to_remove;
   struct iphdr* innerip;
@@ -189,11 +189,11 @@ xdp_gtp_common(struct xdp_md* ctx)
   struct ipv6hdr* ipv6hdr;
   struct udphdr* udphdr;
   struct hdr_cursor nh = { .pos = data };
-  client_info* client_inf;
-  upf_addrs* upf_addrs;
+  struct client_info* client_inf;
+  struct upf_addrs* upf_addrs;
   __u32 client2upf_key = 0;
   __u32 upf2client_key = 1;
-  usage_stats* value;
+  struct usage_stats* value;
   __u32 ifindex;
 
   eth_type = parse_ethhdr(&nh, data_end, &eth);
@@ -272,10 +272,10 @@ xdp_gtp_client(struct xdp_md* ctx)
   struct ethhdr* eth = data;
   struct iphdr* iphdr;
   struct hdr_cursor nh = { .pos = data };
-  client_info* client_inf;
-  upf_addrs* upf_addrs;
+  struct client_info* client_inf;
+  struct upf_addrs* upf_addrs;
   __u32 key = 0;
-  usage_stats* value;
+  struct usage_stats* value;
   __u32 ifindex;
 
   eth_type = parse_ethhdr(&nh, data_end, &eth);
@@ -320,7 +320,7 @@ out:
 SEC("xdp")
 int
 xdp_gtp_upf(struct xdp_md* ctx)
-{ 
+{
   int action = XDP_PASS;
   void* data_end = (void*)(long)ctx->data_end;
   void* data = (void*)(long)ctx->data;
@@ -329,9 +329,9 @@ xdp_gtp_upf(struct xdp_md* ctx)
   struct iphdr* iphdr;
   struct udphdr* udphdr;
   struct hdr_cursor nh = { .pos = data };
-  upf_addrs* upf_addrs;
+  struct upf_addrs* upf_addrs;
   __u32 key = 1;
-  usage_stats* value;
+  struct usage_stats* value;
   __u32 ifindex;
 
   eth_type = parse_ethhdr(&nh, data_end, &eth);
@@ -367,12 +367,12 @@ xdp_gtp_upf(struct xdp_md* ctx)
     action = bpf_redirect(ifindex, 0);
 
     if (action == XDP_REDIRECT) {
-        value = bpf_map_lookup_elem(&rxcnt, &key);
-        if (value) {
-          value->packets += 1;
-          value->bytes += (__u64)(data_end - data);
-        }
+      value = bpf_map_lookup_elem(&rxcnt, &key);
+      if (value) {
+        value->packets += 1;
+        value->bytes += (__u64)(data_end - data);
       }
+    }
 
     goto out;
   }
