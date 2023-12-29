@@ -19,9 +19,7 @@
 #ifndef __PARSING_HELPERS_H
 #define __PARSING_HELPERS_H
 
-// #include <stddef.h>
 #include <linux/if_ether.h>
-// #include <linux/if_packet.h>
 #include <bpf/bpf_endian.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
@@ -30,11 +28,17 @@
 #define GTP_MAX_EXTENSION_HDR_NUM 3
 #define GTP_NO_NEXT_EXTENSION_HDR 0x00
 
-/* Header cursor to keep track of current parsing position */
+/** 
+ * @brief Header cursor to keep track of current parsing position.
+ */
 struct hdr_cursor {
+  /** Pointer to parsing position */
   void *pos;
 };
 
+/** 
+ * @brief GTP header mandatory fields (3GPP TS 29.060 chapter 6)
+ */
 struct gtphdr {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
   __u8 npdu_num_flag : 1, seq_num_flag : 1, ext_hdr_flag : 1, reserved : 1,
@@ -50,18 +54,32 @@ struct gtphdr {
   __u32 teid;
 };
 
+/** 
+ * @brief GTP header optional fields (3GPP TS 29.060 chapter 6)
+ */
 struct gtpadditionalfields {
   __u16 sequence_number;
   __u8 npdu_number;
   __u8 next_extension_hdr_type;
 };
 
+/**
+ * @brief Ethernet frame header parser
+ * 
+ * @param nh Cursor located at Ethernet header start.
+ * Must be updated to the next header's location on return.
+ * @param data_end Pointer to end of packet.
+ * @param ethhdr Empty Ethernet header.
+ * Must be updated with adequate contents on return.
+ * @return  Ethertype field (network-byte order) or -1 on error.
+ */
 static __always_inline __s16 parse_ethhdr(struct hdr_cursor *nh, void *data_end,
                                           struct ethhdr **ethhdr) {
   struct ethhdr *eth = nh->pos;
   __u16 hdrsize = sizeof(*eth);
 
-  /* Byte-count bounds check; check if current pointer + size of header
+  /** 
+   * Byte-count bounds check; check if current pointer + size of header
    * is after data_end.
    */
   if (nh->pos + hdrsize > data_end)
@@ -73,6 +91,16 @@ static __always_inline __s16 parse_ethhdr(struct hdr_cursor *nh, void *data_end,
   return eth->h_proto; /* network-byte-order */
 }
 
+/**
+ * @brief IPv4 header parser
+ * 
+ * @param nh Cursor located at IPv4 header start.
+ * Must be updated to the next header's location on return.
+ * @param data_end Pointer to end of packet.
+ * @param iphdr Empty IPv4 header.
+ * Must be updated with adequate contents on return.
+ * @return  IP protocol for next header or -1 on error.
+ */
 static __always_inline __s16 parse_iphdr(struct hdr_cursor *nh, void *data_end,
                                          struct iphdr **iphdr) {
   struct iphdr *iph = nh->pos;
@@ -86,7 +114,7 @@ static __always_inline __s16 parse_iphdr(struct hdr_cursor *nh, void *data_end,
   if (hdrsize < sizeof(*iph))
     return -1;
 
-  /* Variable-length IPv4 header, need to use byte-based arithmetic */
+  /* Variable-length IPv4 header, need to use byte-based arithmetic. */
   if (nh->pos + hdrsize > data_end)
     return -1;
 
@@ -96,8 +124,15 @@ static __always_inline __s16 parse_iphdr(struct hdr_cursor *nh, void *data_end,
   return iph->protocol;
 }
 
-/*
- * parse_udphdr: parse the udp header and return the length of the udp payload
+/**
+ * @brief UDP header parser
+ * 
+ * @param nh Cursor located at UDP header start.
+ * Must be updated to the next header's location on return.
+ * @param data_end Pointer to end of packet.
+ * @param udphdr Empty UDP header.
+ * Must be updated with adequate contents on return.
+ * @return Length of UDP payload or -1 on error.
  */
 static __always_inline __s32 parse_udphdr(struct hdr_cursor *nh, void *data_end,
                                           struct udphdr **udphdr) {
@@ -117,8 +152,15 @@ static __always_inline __s32 parse_udphdr(struct hdr_cursor *nh, void *data_end,
   return len;
 }
 
-/*
- * parse_gtphdr: parse the gtp header and return the GTP payload length
+/**
+ * @brief GTP header parser
+ * 
+ * @param nh Cursor located at GTP header start.
+ * Must be updated to the next header's location on return.
+ * @param data_end Pointer to end of packet.
+ * @param gtphdr Empty GTP header.
+ * Must be updated with adequate contents on return.
+ * @return Length of GTP payload or -1 on error.
  */
 static __always_inline __s32 parse_gtp(struct hdr_cursor *nh, void *data_end,
                                        struct gtphdr **gtphdr) {
@@ -132,10 +174,12 @@ static __always_inline __s32 parse_gtp(struct hdr_cursor *nh, void *data_end,
   nh->pos = h + 1;
   *gtphdr = h;
 
+  /* Return if GTP header doesn't contain encapsulated user traffic. */
   if (h->message_type != GTP_G_PDU) {
     return -1;
   }
 
+  /* Check for GTP optional fields. */
   if (!(h->ext_hdr_flag && h->seq_num_flag && h->npdu_num_flag)) {
     goto out;
   }
@@ -151,6 +195,7 @@ static __always_inline __s32 parse_gtp(struct hdr_cursor *nh, void *data_end,
   __u8 *next_extension_hdr_type = &gtpaddfields->next_extension_hdr_type;
   __u8 *extension_length;
 
+  /* Check for extension headers and adjust cursor position accordingly. */
 #pragma unroll
   for (int i = 0; i < GTP_MAX_EXTENSION_HDR_NUM; i++) {
     if (next_extension_hdr_type == GTP_NO_NEXT_EXTENSION_HDR) {
@@ -171,6 +216,7 @@ static __always_inline __s32 parse_gtp(struct hdr_cursor *nh, void *data_end,
     next_extension_hdr_type = nh->pos - 1;
   }
 
+  /* Return if number of extension headers > GTP_MAX_EXTENSION_HDR_NUM. */
   if (next_extension_hdr_type == GTP_NO_NEXT_EXTENSION_HDR) {
     return -1;
   }
