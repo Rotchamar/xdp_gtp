@@ -10,7 +10,7 @@
 #include <linux/bpf.h>
 
 /**
- * @brief Struct for storing usage statistics in BPF map
+ * @brief Struct for storing usage statistics in BPF map.
  */
 struct usage_stats
 {
@@ -21,11 +21,11 @@ struct usage_stats
 };
 
 /**
- * @brief Struct for storing upf information in BPF map
+ * @brief Struct for storing UPF information in BPF map.
  */
-struct upf_addrs
+struct upf_info
 {
-  /** IP address of the host's UPF-facing interface */
+  /** IP address of the host's UPF-facing interface (network byte order) */
   __u32 local_ip;
   /** Destination Ethernet address for packets sent towards UPF */
   unsigned char eth_next_hop[ETH_ALEN];
@@ -36,13 +36,13 @@ struct upf_addrs
 };
 
 /**
- * @brief Struct for storing client information in BPF map
+ * @brief Struct for storing client information in BPF map.
  */
 struct client_info
 {
   /** GTP Tunnel Endpoint Identifier */
   __u32 teid;
-  /** Client's IP address */
+  /** Client's IP address (network byte order) */
   __u32 upf_ip;
   /** Destination Ethernet address for packets sent towards client */
   unsigned char eth_next_hop[ETH_ALEN];

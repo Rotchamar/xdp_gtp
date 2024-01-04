@@ -30,7 +30,7 @@ func (i *arrayFlags) Set(value string) error {
 	return nil
 }
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go bpf ../gtp.c -- -I../common
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go bpf ../gtp.c -- -I../common -Wall -Werror
 
 func main() {
 
@@ -166,7 +166,7 @@ func main() {
 	defer ticker.Stop()
 	for range ticker.C {
 
-		new_stats, err := extractUsageStats(objs.Rxcnt)
+		new_stats, err := extractUsageStats(objs.Txcnt)
 		if err != nil {
 			log.Printf("Error reading map: %s", err)
 			continue

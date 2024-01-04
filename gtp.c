@@ -8,43 +8,60 @@
 #define IHL_MIN 0x5
 #define GTP_UDP_PORT 2152
 
+/**
+ * @brief BPF map for storing information on transmitted packets.
+ *
+ * @note `key` corresponds to an 32 bit unsigned integer representing the
+ * direction of travel of the packets (0 for client->UPF and 1 for UPF->client).
+ */
 struct
 {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
   __type(key, __u32);
   __type(value, struct usage_stats);
   __uint(max_entries, 2);
-} rxcnt SEC(".maps");
+} txcnt SEC(".maps");
 
-// struct
-// {
-//   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-//   __type(key, __u32);
-//   __type(value, __u32);
-//   __uint(max_entries, 2);
-// } rxcnttot SEC(".maps");
-
+/**
+ * @brief BPF map for storing information on each of the available UPFs
+ *
+ * @note `key` corresponds to an 32 bit unsigned integer representing the
+ * source's IPv4 address in network byte order.
+ */
 struct
 {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
-  __type(value, struct upf_addrs);
+  __type(value, struct upf_info);
   __uint(max_entries, 256);
-} upf_map SEC(".maps"); // IP addrs in network byte order
+} upf_map SEC(".maps");
 
+/**
+ * @brief BPF map for storing information on each of the registered clients
+ *
+ * @note `key` corresponds to an 32 bit unsigned integer representing the
+ * source's IPv4 address in network byte order.
+ */
 struct
 {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
   __type(value, struct client_info);
   __uint(max_entries, 256);
-} client_map SEC(".maps"); // IP addrs in network byte order
+} client_map SEC(".maps");
 
+/**
+ * @brief Function for calculating IPv4 header checksum.
+ *
+ * @param iphdr IPv4 header for checksum calculation
+ * (checksum field must be empty).
+ *
+ * @note We always create minimum size IP headers, therefore we only calculate
+ * checksums for those headers.
+ */
 static __always_inline void
 calculate_ip_checksum(struct iphdr* iphdr)
 {
-  // We always create minimum size IP headers, therefore we only calculate
-  // checksums for those headers
   __u32 checksum = 0;
 
 #pragma unroll
@@ -54,66 +71,66 @@ calculate_ip_checksum(struct iphdr* iphdr)
   iphdr->check = ~(__u16)((checksum >> 16) + (checksum & 0xffff));
 }
 
+/**
+ * @brief Function for encapsulating client's IP datagram in a GTP tunnel
+ * towards the UPF.
+ *
+ * @param ctx User accessible metadata for XDP packet hook.
+ * @param client_inf Struct containing information on the registered client.
+ * @param upf_inf Struct containing information on the UPF assigned to the
+ * registered client.
+ * @return Output interface index or 0 on error.
+ */
 static __always_inline __u32
 encapsulate_gtp(struct xdp_md* ctx,
-                struct ethhdr* eth,
-                struct iphdr* iphdr,
                 struct client_info* client_inf,
-                struct upf_addrs* upf_addrs)
+                struct upf_info* upf_inf)
 {
-  struct udphdr* udphdr;
-  struct gtphdr* gtphdr;
-
+  /* Increase packet size for new headers. */
   if (bpf_xdp_adjust_head(ctx,
-                          0 - (int)sizeof(*iphdr) - (int)(sizeof(*udphdr)) -
-                            (int)(sizeof(*gtphdr)))) {
+                          0 - (int)sizeof(struct iphdr) -
+                            (int)(sizeof(struct udphdr)) -
+                            (int)(sizeof(struct gtphdr)))) {
     return 0;
   }
 
   void* data_end = (void*)(long)ctx->data_end;
-  struct ethhdr* oldeth = eth;
-  eth = (void*)(long)ctx->data;
+  struct ethhdr* ethhdr = (void*)(long)ctx->data;
 
-  // We only use minimum length IP and GTP headers
-  if ((void*)eth + sizeof(*eth) + sizeof(*iphdr) + sizeof(*udphdr) +
-        sizeof(*gtphdr) >
+  /* We only use minimum length IP and GTP headers. */
+  if ((void*)ethhdr + sizeof(struct ethhdr) + sizeof(struct iphdr) +
+        sizeof(struct udphdr) + sizeof(struct gtphdr) >
       data_end) {
     return 0;
   }
 
-  __builtin_memcpy(eth, &oldeth, sizeof(*oldeth));
+  /* Copy both the source and destination MAC address. */
+  __builtin_memcpy(ethhdr, upf_inf->eth_next_hop, 2 * ETH_ALEN);
 
-  __builtin_memcpy(eth,
-                   upf_addrs->eth_next_hop,
-                   2 *
-                     ETH_ALEN); // Copy both source and destinadion mac address
-
-  eth->h_proto = 0x0008; // IP over Ethernet
-
-  struct iphdr* oldip = iphdr;
-  iphdr = (void*)(eth + 1);
+  ethhdr->h_proto = 0x0008; /* IP over Ethernet */
+  struct iphdr* iphdr = (void*)(ethhdr + 1);
 
   __builtin_memset(
-    iphdr, 0, sizeof(*iphdr) + sizeof(*udphdr) + sizeof(*gtphdr));
+    iphdr, 0, sizeof(*iphdr) + sizeof(struct udphdr) + sizeof(struct gtphdr));
 
   iphdr->daddr = client_inf->upf_ip;
-  iphdr->saddr = upf_addrs->local_ip;
+  iphdr->saddr = upf_inf->local_ip;
 
   iphdr->ihl = IHL_MIN;
-  iphdr->version = 0x4; // IPv4
+  iphdr->version = 0x4; /* IPv4 */
   iphdr->ttl = 128;
-  iphdr->protocol = 0x11; // UDP
+  iphdr->protocol = 0x11; /* UPD */
   iphdr->tot_len = bpf_htons(data_end - (void*)iphdr);
 
   calculate_ip_checksum(iphdr);
 
-  udphdr =
-    (void*)(iphdr + 1); // Equivalent to (void*)iphdr + 4*iphdr->ihl in our case
+  /* Equivalent to (void*)iphdr + 4*iphdr->ihl for minimum length IP packets. */
+  struct udphdr* udphdr = (void*)(iphdr + 1);
 
   udphdr->dest = bpf_htons(GTP_UDP_PORT);
   udphdr->len = bpf_htons(data_end - (void*)udphdr);
 
-  gtphdr = (void*)(udphdr + 1);
+  struct gtphdr* gtphdr = (void*)(udphdr + 1);
 
   gtphdr->version = 1;
   gtphdr->protocol_type = 1;
@@ -121,25 +138,29 @@ encapsulate_gtp(struct xdp_md* ctx,
   gtphdr->message_len = bpf_htons(data_end - (void*)(gtphdr + 1));
   gtphdr->teid = client_inf->teid;
 
-  return upf_addrs->ifindex;
+  return upf_inf->ifindex;
 }
 
+/**
+ * @brief Function for de-encapsulating client's IP datagram from the GTP tunnel
+ * sent by the UPF.
+ *
+ * @param ctx User accessible metadata for XDP packet hook.
+ * @param nh Next header cursor situated on GTP header.
+ * @param data Pointer to start of packet.
+ * @param data_end Pointer to end of packet.
+ * @return Output interface index or 0 on error.
+ */
 static __always_inline __u32
-pop_gtp(struct xdp_md* ctx,
-        struct udphdr* udphdr,
-        struct hdr_cursor* nh,
-        void* data,
-        void* data_end)
+pop_gtp(struct xdp_md* ctx, struct hdr_cursor* nh, void* data, void* data_end)
 {
   struct ethhdr* newethhdr;
   struct gtphdr* gtphdr;
   struct client_info* client_inf;
-  __s32 len;
-  __s32 num_bytes_to_remove;
   struct iphdr* innerip;
 
-  len = parse_gtp(nh, data_end, &gtphdr);
-  if (len < 0) {
+  __s32 payload_len = parse_gtp(nh, data_end, &gtphdr);
+  if (payload_len < 0) {
     return 0;
   }
 
@@ -153,8 +174,10 @@ pop_gtp(struct xdp_md* ctx,
     return 0;
   }
 
-  num_bytes_to_remove = data_end - data - len - sizeof(*newethhdr);
+  __s32 num_bytes_to_remove =
+    data_end - data - payload_len - sizeof(struct ethhdr);
 
+  /* Decrease packet size for de-encapsulation. */
   if (bpf_xdp_adjust_head(ctx, num_bytes_to_remove)) {
     return 0;
   }
@@ -167,15 +190,17 @@ pop_gtp(struct xdp_md* ctx,
     return 0;
   }
 
-  __builtin_memcpy(newethhdr,
-                   client_inf->eth_next_hop,
-                   2 *
-                     ETH_ALEN); // Copy both source and destinadion mac address
-  newethhdr->h_proto = 0x0008;  // IP over Ethernet
+  /* Copy both the source and destination MAC address. */
+  __builtin_memcpy(newethhdr, client_inf->eth_next_hop, 2 * ETH_ALEN);
+  newethhdr->h_proto = 0x0008; /* IP over Ethernet */
 
   return client_inf->ifindex;
 }
 
+/**
+ * @brief xdp_gtp BPF program for listening and writing to the same interface
+ * (shared interface for client and UPF side).
+ */
 SEC("xdp")
 int
 xdp_gtp_common(struct xdp_md* ctx)
@@ -186,13 +211,12 @@ xdp_gtp_common(struct xdp_md* ctx)
   __s16 eth_type, ip_type;
   struct ethhdr* eth = data;
   struct iphdr* iphdr;
-  struct ipv6hdr* ipv6hdr;
   struct udphdr* udphdr;
   struct hdr_cursor nh = { .pos = data };
   struct client_info* client_inf;
-  struct upf_addrs* upf_addrs;
-  __u32 client2upf_key = 0;
-  __u32 upf2client_key = 1;
+  struct upf_info* upf_inf;
+  __u32 client2upf_txcnt_key = 0;
+  __u32 upf2client_txcnt_key = 1;
   struct usage_stats* value;
   __u32 ifindex;
 
@@ -206,48 +230,23 @@ xdp_gtp_common(struct xdp_md* ctx)
     goto out;
   }
 
+  /* Check if IP source address is registered in clients map. */
   client_inf = bpf_map_lookup_elem(&client_map, &(iphdr->saddr));
   if (client_inf) {
 
-    upf_addrs = bpf_map_lookup_elem(&upf_map, &(client_inf->upf_ip));
-    if (upf_addrs) {
-
-      ifindex = encapsulate_gtp(ctx, eth, iphdr, client_inf, upf_addrs);
-      if (ifindex == 0) {
-        goto out;
-      }
-
-      value = bpf_map_lookup_elem(&rxcnt, &client2upf_key);
-      if (value) {
-        value->packets += 1;
-        value->bytes += (__u64)(data_end - data);
-      }
-
-      action = XDP_TX;
-      goto out;
-    }
-  }
-
-  if ((void*)(iphdr + 1) > data_end) {
-    goto out;
-  }
-
-  if (ip_type == IPPROTO_UDP) {
-    if (parse_udphdr(&nh, data_end, &udphdr) < 0 ||
-        udphdr->dest != bpf_htons(GTP_UDP_PORT)) {
+    /* Check if client's UPF address is registered in UPFs map. */
+    upf_inf = bpf_map_lookup_elem(&upf_map, &(client_inf->upf_ip));
+    if (!upf_inf) {
       goto out;
     }
 
-    upf_addrs = bpf_map_lookup_elem(&upf_map, &(iphdr->saddr));
-    if (!upf_addrs) {
+    ifindex = encapsulate_gtp(ctx, client_inf, upf_inf);
+    if (ifindex == 0) {
       goto out;
     }
 
-    if (pop_gtp(ctx, udphdr, &nh, data, data_end)) {
-      goto out;
-    }
-
-    value = bpf_map_lookup_elem(&rxcnt, &upf2client_key);
+    /* Update information on transmitted package and byte count. */
+    value = bpf_map_lookup_elem(&txcnt, &client2upf_txcnt_key);
     if (value) {
       value->packets += 1;
       value->bytes += (__u64)(data_end - data);
@@ -257,10 +256,51 @@ xdp_gtp_common(struct xdp_md* ctx)
     goto out;
   }
 
+  if ((void*)(iphdr + 1) > data_end) {
+    goto out;
+  }
+
+  if (ip_type != IPPROTO_UDP) {
+    goto out;
+  }
+
+  /* Parse UDP header and check if next header corresponds to GTP. */
+  if (parse_udphdr(&nh, data_end, &udphdr) < 0 ||
+      udphdr->dest != bpf_htons(GTP_UDP_PORT)) {
+    goto out;
+  }
+
+  /**
+   * Check if IP source address is registered in UPFs map.
+   *
+   * This check is placed as late as possible to delay (and possibly avoid)
+   * the performance hit caused by reading memory.
+   */
+  upf_inf = bpf_map_lookup_elem(&upf_map, &(iphdr->saddr));
+  if (!upf_inf) {
+    goto out;
+  }
+
+  if (pop_gtp(ctx, &nh, data, data_end)) {
+    goto out;
+  }
+
+  /* Update information on transmitted package and byte count. */
+  value = bpf_map_lookup_elem(&txcnt, &upf2client_txcnt_key);
+  if (value) {
+    value->packets += 1;
+    value->bytes += (__u64)(data_end - data);
+  }
+
+  action = XDP_TX;
+
 out:
   return action;
 }
 
+/**
+ * @brief xdp_gtp BPF program for client-facing interface.
+ */
 SEC("xdp")
 int
 xdp_gtp_client(struct xdp_md* ctx)
@@ -273,8 +313,8 @@ xdp_gtp_client(struct xdp_md* ctx)
   struct iphdr* iphdr;
   struct hdr_cursor nh = { .pos = data };
   struct client_info* client_inf;
-  struct upf_addrs* upf_addrs;
-  __u32 key = 0;
+  struct upf_info* upf_inf;
+  __u32 txcnt_key = 0;
   struct usage_stats* value;
   __u32 ifindex;
 
@@ -288,35 +328,43 @@ xdp_gtp_client(struct xdp_md* ctx)
     goto out;
   }
 
+  /* Check if IP source address is registered in clients map. */
   client_inf = bpf_map_lookup_elem(&client_map, &(iphdr->saddr));
-  if (client_inf) {
+  if (!client_inf) {
+    goto out;
+  }
 
-    upf_addrs = bpf_map_lookup_elem(&upf_map, &(client_inf->upf_ip));
-    if (upf_addrs) {
+  /* Check if client's UPF address is registered in UPFs map. */
+  upf_inf = bpf_map_lookup_elem(&upf_map, &(client_inf->upf_ip));
+  if (!upf_inf) {
+    goto out;
+  }
 
-      ifindex = encapsulate_gtp(ctx, eth, iphdr, client_inf, upf_addrs);
-      if (ifindex == 0) {
-        goto out;
-      }
+  ifindex = encapsulate_gtp(ctx, client_inf, upf_inf);
+  if (ifindex == 0) {
+    goto out;
+  }
 
-      action = bpf_redirect(ifindex, 0);
+  action = bpf_redirect(ifindex, 0);
 
-      if (action == XDP_REDIRECT) {
-        value = bpf_map_lookup_elem(&rxcnt, &key);
-        if (value) {
-          value->packets += 1;
-          value->bytes += (__u64)(data_end - data);
-        }
-      }
+  if (action != XDP_REDIRECT) {
+    goto out;
+  }
 
-      goto out;
-    }
+  /* Update information on transmitted package and byte count. */
+  value = bpf_map_lookup_elem(&txcnt, &txcnt_key);
+  if (value) {
+    value->packets += 1;
+    value->bytes += (__u64)(data_end - data);
   }
 
 out:
   return action;
 }
 
+/**
+ * @brief xdp_gtp BPF program for UPF-facing interface.
+ */
 SEC("xdp")
 int
 xdp_gtp_upf(struct xdp_md* ctx)
@@ -329,8 +377,8 @@ xdp_gtp_upf(struct xdp_md* ctx)
   struct iphdr* iphdr;
   struct udphdr* udphdr;
   struct hdr_cursor nh = { .pos = data };
-  struct upf_addrs* upf_addrs;
-  __u32 key = 1;
+  struct upf_info* upf_inf;
+  __u32 txcnt_key = 1;
   struct usage_stats* value;
   __u32 ifindex;
 
@@ -348,33 +396,43 @@ xdp_gtp_upf(struct xdp_md* ctx)
     goto out;
   }
 
-  if (ip_type == IPPROTO_UDP) {
-    if (parse_udphdr(&nh, data_end, &udphdr) < 0 ||
-        udphdr->dest != bpf_htons(GTP_UDP_PORT)) {
-      goto out;
-    }
-
-    upf_addrs = bpf_map_lookup_elem(&upf_map, &(iphdr->saddr));
-    if (!upf_addrs) {
-      goto out;
-    }
-
-    ifindex = pop_gtp(ctx, udphdr, &nh, data, data_end);
-    if (ifindex == 0) {
-      goto out;
-    }
-
-    action = bpf_redirect(ifindex, 0);
-
-    if (action == XDP_REDIRECT) {
-      value = bpf_map_lookup_elem(&rxcnt, &key);
-      if (value) {
-        value->packets += 1;
-        value->bytes += (__u64)(data_end - data);
-      }
-    }
-
+  if (ip_type != IPPROTO_UDP) {
     goto out;
+  }
+
+  /* Parse UDP header and check if next header corresponds to GTP. */
+  if (parse_udphdr(&nh, data_end, &udphdr) < 0 ||
+      udphdr->dest != bpf_htons(GTP_UDP_PORT)) {
+    goto out;
+  }
+
+  /**
+   * Check if IP source address is registered in UPFs map.
+   *
+   * This check is placed as late as possible to delay (and possibly avoid)
+   * the performance hit caused by reading memory.
+   */
+  upf_inf = bpf_map_lookup_elem(&upf_map, &(iphdr->saddr));
+  if (!upf_inf) {
+    goto out;
+  }
+
+  ifindex = pop_gtp(ctx, &nh, data, data_end);
+  if (ifindex == 0) {
+    goto out;
+  }
+
+  action = bpf_redirect(ifindex, 0);
+
+  if (action == XDP_REDIRECT) {
+    goto out;
+  }
+
+  /* Update information on transmitted package and byte count. */
+  value = bpf_map_lookup_elem(&txcnt, &txcnt_key);
+  if (value) {
+    value->packets += 1;
+    value->bytes += (__u64)(data_end - data);
   }
 
 out:
