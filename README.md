@@ -17,13 +17,6 @@ Clone the repo:
 git clone https://github.com/Rotchamar/xdp_gtp
 ```
 
-Build XDP/eBPF program:
-
-```
-cd ./xdp_gtp/golang
-go generate
-```
-
 Build main executable:
 
 ```
@@ -83,6 +76,29 @@ If VMs 2 and 3's support XDP in driver or hardware offload mode, use `-m driver`
 #### Step 4: Test the scenario
 
 Use tools such as ping or iperf to test the conectivity between Clients A and B and benchmark the performance.
+
+## Modifying the XDP/eBPF program
+
+Taking into consideration the ease of use of this application, the pre-compiled eBPF bytecode and generated Go helper 
+functions are provided in the repository, removing the need for users to compile and generate these elements by themselves.
+To provide more advanced users the possibility of making changes to the XDP/eBPF code, the following instructions 
+for Ubuntu 22.04LTS are presented.
+
+### Install dependencies
+
+```
+sudo apt install clang llvm libelf-dev libbpf-dev libc6-dev-i386
+```
+
+### Compiling the XDP/eBPF program and generating Go helpers
+
+This step makes use of Cilium's `bpf2go` program which is called with `go generate`.
+
+```
+cd ./golang
+go generate
+```
+
 
 ## Authors
 
