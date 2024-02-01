@@ -2,7 +2,7 @@
 .vscode/*
 
 # go generate
-golang/bpf_*
+golang/gtp_bpf.*
 
 # build
 golang/xdp_gtp

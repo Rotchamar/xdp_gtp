@@ -276,7 +276,7 @@ func populateClientUpfInfoMap(
 	return clientInfoMap, upfInfoMap, nil
 }
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target "bpf" bpf ../gtp.c -- -I../common -Wall -Werror
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target "bpf" gtp ../gtp.c -- -I../common -Wall -Werror
 
 func main() {
 
@@ -305,8 +305,8 @@ func main() {
 	}
 
 	// Load pre-compiled programs into the kernel.
-	objs := bpfObjects{}
-	if err := loadBpfObjects(&objs, nil); err != nil {
+	objs := gtpObjects{}
+	if err := loadGtpObjects(&objs, nil); err != nil {
 		log.Fatalf("Error: Loading objects: %s", err)
 	}
 	defer objs.Close()
