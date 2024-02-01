@@ -1,8 +1,5 @@
 # Visual Studio Code
 .vscode/*
 
-# go generate
-golang/gtp_bpf.*
-
 # build
 golang/xdp_gtp
