@@ -439,4 +439,4 @@ out:
   return action;
 }
 
-char _license[] SEC("license") = "GPL";
+char _license[] SEC("license") = "MIT";

@@ -20,6 +20,7 @@ git clone https://github.com/Rotchamar/xdp_gtp
 Build main executable:
 
 ```
+cd ./xdp_gtp/golang
 go build
 ```
 
