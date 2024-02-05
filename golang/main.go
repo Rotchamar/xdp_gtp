@@ -1,4 +1,4 @@
-package main
+package xdp_gtp
 
 import (
 	"encoding/binary"
@@ -101,56 +101,81 @@ func extractUsageStats(m *ebpf.Map) ([2]UsageStats, error) {
 	return totalStats, nil
 }
 
-// Function for populating UpfInfo's elements given its IP address.
-func getUpfInfoAddrs(upfIP net.IP, upfInf *UpfInfo, xdpIface *net.Interface) error {
+func pingEndpoint(endpointIP string) (bool, error) {
+	reachable := false
 
-	// Probe if UPF is reachable.
-	pinger, err := probing.NewPinger(upfIP.String())
+	// Probe if endpoint is reachable.
+	pinger, err := probing.NewPinger(endpointIP)
 	if err != nil {
-		return err
+		return reachable, err
 	}
 	pinger.Count = 1
 	pinger.Timeout = 50000000 // 50 ms timeout
 	err = pinger.Run()        // Blocks until finished
 	if err != nil {
-		return err
+		return reachable, err
 	}
 
 	if pinger.PacketsRecv == 0 {
-		log.Printf("Could not reach UPF with IP = %s", upfIP.String())
+		return false, nil
 	}
 
+	return true, nil
+}
+
+func getEndpointAddrs(endpointIP net.IP) (*net.Interface, net.HardwareAddr, net.IP, error) {
 	router, err := netroute.New()
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
 
 	// Check system's routing table.
-	iface, gateway, localIP, err := router.Route(upfIP)
+	outputIface, gateway, localIP, err := router.Route(endpointIP)
 	if err != nil {
-		return err
-	}
-
-	if iface.Index != xdpIface.Index {
-		return fmt.Errorf("Traffic to UPF is not routed through the designated interface (%s instead of %s)", iface.Name, xdpIface.Name)
+		return nil, nil, nil, err
 	}
 
 	// If gateway is nil, that is, the UPF is found in the next hop, set the
 	// gateway's address as the UPF's IP address.
 	if gateway == nil {
-		gateway = upfIP
+		gateway = endpointIP
 	}
 
 	// Check the gateway's hardware address by means of an ARP ping.
 	hwAddr, _, err := arping.Ping(gateway)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return outputIface, hwAddr, localIP, nil
+}
+
+// Function for populating UpfInfo's elements given its IP address.
+func getUpfInfoAddrs(upfIP net.IP, upfInf *UpfInfo, xdpIface *net.Interface) error {
+
+	// Probe if UPF is reachable.
+	reachable, err := pingEndpoint(upfIP.String())
+	if err != nil {
 		return err
+	}
+	if !reachable {
+		log.Printf("Could not reach UPF with IP = %s", upfIP.String())
+	}
+
+	outputIface, hwAddr, localIP, err := getEndpointAddrs(upfIP)
+	if err != nil {
+		return err
+	}
+
+	if outputIface.Index != xdpIface.Index {
+		return fmt.Errorf("Traffic to UPF is not routed through the designated interface (%s instead of %s)",
+			outputIface.Name, xdpIface.Name)
 	}
 
 	upfInf.LocalIP = ip2int(localIP)
 	upfInf.EthNextHop = [6]uint8(hwAddr)
-	upfInf.EthLocal = [6]uint8(iface.HardwareAddr)
-	upfInf.Ifindex = uint32(iface.Index)
+	upfInf.EthLocal = [6]uint8(outputIface.HardwareAddr)
+	upfInf.Ifindex = uint32(outputIface.Index)
 
 	return nil
 }
@@ -158,52 +183,28 @@ func getUpfInfoAddrs(upfIP net.IP, upfInf *UpfInfo, xdpIface *net.Interface) err
 // Function for populating ClientInfo's routing-related elements given its IP address.
 func getClientInfoAddrs(clientIP net.IP, clientInf *ClientInfo, xdpIface *net.Interface) error {
 
-	// Probe if client is reachable
-	pinger, err := probing.NewPinger(clientIP.String())
+	// Probe if UPF is reachable.
+	reachable, err := pingEndpoint(clientIP.String())
 	if err != nil {
 		return err
 	}
-	pinger.Count = 1
-	pinger.Timeout = 50000000 // 50 ms timeout
-	err = pinger.Run()        // Blocks until finished
-	if err != nil {
-		return err
-	}
-
-	if pinger.PacketsRecv == 0 {
+	if !reachable {
 		log.Printf("Could not reach client with IP = %s", clientIP.String())
 	}
 
-	router, err := netroute.New()
+	outputIface, hwAddr, _, err := getEndpointAddrs(clientIP)
 	if err != nil {
 		return err
 	}
 
-	// Check system's routing table.
-	iface, gateway, _, err := router.Route(clientIP)
-	if err != nil {
-		return err
-	}
-
-	if iface.Index != xdpIface.Index {
-		return fmt.Errorf("Traffic to client is not routed through the designated interface (%s instead of %s)", iface.Name, xdpIface.Name)
-	}
-
-	// If gateway is nil, that is, the client is found in the next hop, set the
-	// gateway's address as the client's IP address.
-	if gateway == nil {
-		gateway = clientIP
-	}
-
-	// Check the gateway's hardware address by means of an ARP ping.
-	hwAddr, _, err := arping.Ping(gateway)
-	if err != nil {
-		return fmt.Errorf("Error ARPing next hop: %v", err)
+	if outputIface.Index != xdpIface.Index {
+		return fmt.Errorf("Traffic to client is not routed through the designated interface (%s instead of %s)",
+			outputIface.Name, xdpIface.Name)
 	}
 
 	clientInf.EthNextHop = [6]uint8(hwAddr)
-	clientInf.EthLocal = [6]uint8(iface.HardwareAddr)
-	clientInf.Ifindex = uint32(iface.Index)
+	clientInf.EthLocal = [6]uint8(outputIface.HardwareAddr)
+	clientInf.Ifindex = uint32(outputIface.Index)
 
 	return nil
 }
@@ -276,6 +277,239 @@ func populateClientUpfInfoMap(
 	return clientInfoMap, upfInfoMap, nil
 }
 
+type xdpgtpMode uint8
+
+const (
+	xdpgtpNone xdpgtpMode = iota
+	xdpgtpClient
+	xdpgtpUpf
+	xdpgtpCommon
+)
+
+type ifaceStatus struct {
+	mode    xdpgtpMode
+	xdpLink link.Link
+}
+
+type XDPGTP struct {
+	objs          gtpObjects
+	xdpFlags      link.XDPAttachFlags
+	ifaces        map[int]ifaceStatus
+	upfInfoMap    map[uint32]UpfInfo
+	clientInfoMap map[uint32]ClientInfo
+}
+
+func NewXDPGTP(xdpFlags link.XDPAttachFlags) (*XDPGTP, error) {
+	xdpgtp := XDPGTP{}
+
+	xdpgtp.objs = gtpObjects{}
+	if err := loadGtpObjects(&xdpgtp.objs, nil); err != nil {
+		return nil, fmt.Errorf("Could not load objects: %s", err)
+	}
+
+	xdpgtp.xdpFlags = xdpFlags
+	xdpgtp.ifaces = make(map[int]ifaceStatus)
+	xdpgtp.upfInfoMap = make(map[uint32]UpfInfo)
+	xdpgtp.clientInfoMap = make(map[uint32]ClientInfo)
+
+	return &xdpgtp, nil
+}
+
+// defer after creating new xdpgtp
+func (xdpgtp XDPGTP) Close() error {
+	return xdpgtp.objs.Close()
+}
+
+func (xdpgtp XDPGTP) attachProgramToInterface(ifindex int, program *ebpf.Program, mode xdpgtpMode) error {
+
+	ifaceStatus, ok := xdpgtp.ifaces[ifindex]
+
+	if ok && ifaceStatus.mode != xdpgtpNone {
+		return fmt.Errorf("An XDP program is already attached to this interface")
+	}
+
+	var err error
+
+	ifaceStatus.xdpLink, err = link.AttachXDP(link.XDPOptions{
+		Program:   program,
+		Interface: ifindex,
+		Flags:     xdpgtp.xdpFlags,
+	})
+
+	if err != nil {
+		return fmt.Errorf("Could not attach XDP program: %s", err)
+	}
+
+	ifaceStatus.mode = mode
+	xdpgtp.ifaces[ifindex] = ifaceStatus
+
+	return nil
+
+}
+
+func (xdpgtp XDPGTP) AttachClientFacingProgramToInterface(clientIfindex int) error {
+	err := xdpgtp.attachProgramToInterface(clientIfindex, xdpgtp.objs.XdpGtpClient, xdpgtpClient)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (xdpgtp XDPGTP) AttachUpfFacingProgramToInterface(upfIfindex int) error {
+	err := xdpgtp.attachProgramToInterface(upfIfindex, xdpgtp.objs.XdpGtpUpf, xdpgtpUpf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// func (XDPGTP) AttachCommonProgramToInterface(commonIface *net.Interface) {
+// TODO
+// }
+
+// Defer after attaching any program
+func (xdpgtp XDPGTP) DetachProgramFromInterface(ifindex int) error {
+
+	ifaceStatus, ok := xdpgtp.ifaces[ifindex]
+
+	if !ok || ifaceStatus.mode == xdpgtpNone {
+		return fmt.Errorf("Interface doesn't have any program attached")
+	}
+
+	ifaceStatus.xdpLink.Close()
+	delete(xdpgtp.ifaces, ifindex)
+
+	return nil
+}
+
+func (xdpgtp XDPGTP) AddUPF(upfIP net.IP) error {
+	upfInf := UpfInfo{}
+
+	routedIface, hwAddr, localIP, err := getEndpointAddrs(upfIP)
+	if err != nil {
+		return fmt.Errorf("Could not acquire UPF-related addresses: %s", err)
+	}
+
+	upfProgramAttachedToRoutedIface := false
+	for ifindex, status := range xdpgtp.ifaces {
+		if ifindex == routedIface.Index && status.mode == xdpgtpUpf {
+			upfProgramAttachedToRoutedIface = true
+			break
+		}
+	}
+	if !upfProgramAttachedToRoutedIface {
+		return fmt.Errorf("UPF program not attached to routed interface")
+	}
+
+	upfInf.LocalIP = ip2int(localIP)
+	upfInf.EthNextHop = [6]uint8(hwAddr)
+	upfInf.EthLocal = [6]uint8(routedIface.HardwareAddr)
+	upfInf.Ifindex = uint32(routedIface.Index)
+
+	xdpgtp.upfInfoMap[ip2int(upfIP)] = upfInf
+
+	err = xdpgtp.objs.UpfMap.Update(ip2int(upfIP), upfInf, ebpf.UpdateNoExist)
+	if err != nil {
+		return fmt.Errorf("Could not load UPF: %s", err)
+	}
+
+	return nil
+}
+
+func (xdpgtp XDPGTP) GetClientsForUPF(upfIP net.IP) []net.IP {
+
+	blockingClients := make([]net.IP, 0)
+	for clientIP, clientInf := range xdpgtp.clientInfoMap {
+		if clientInf.UpfIP == ip2int(upfIP) {
+			blockingClients = append(blockingClients, int2ip(clientIP))
+		}
+	}
+	return blockingClients
+}
+
+func (xdpgtp XDPGTP) DeleteUPF(upfIP net.IP) error {
+
+	blockingClients := xdpgtp.GetClientsForUPF(upfIP)
+
+	if len(blockingClients) != 0 {
+
+		blockingClientsStr := make([]string, len(blockingClients))
+		for idx, blockingIP := range blockingClients {
+			blockingClientsStr[idx] = blockingIP.String()
+		}
+
+		return fmt.Errorf("Could not delete UPF, %d clients depend on this UPF: %s",
+			len(blockingClients), strings.Join(blockingClientsStr, ", "))
+	}
+
+	err := xdpgtp.objs.UpfMap.Delete(ip2int(upfIP))
+	if err != nil {
+		return fmt.Errorf("Could not delete UPF: %s", err)
+	}
+
+	delete(xdpgtp.upfInfoMap, ip2int(upfIP))
+
+	return nil
+}
+
+func (xdpgtp XDPGTP) AddClient(clientIP net.IP, teid uint32, upfIP net.IP) error {
+	clientInf := ClientInfo{}
+
+	assignedUpfIsRegistered := false
+	for registeredUpf := range xdpgtp.upfInfoMap {
+		if registeredUpf == ip2int(upfIP) {
+			assignedUpfIsRegistered = true
+		}
+	}
+	if !assignedUpfIsRegistered {
+		return fmt.Errorf("Assigned client has not been previously registered")
+	}
+
+	routedIface, hwAddr, _, err := getEndpointAddrs(clientIP)
+	if err != nil {
+		return fmt.Errorf("Could not acquire client-related addresses: %s", err)
+	}
+
+	clientProgramAttachedToRoutedIface := false
+	for ifindex, status := range xdpgtp.ifaces {
+		if ifindex == routedIface.Index && status.mode == xdpgtpClient {
+			clientProgramAttachedToRoutedIface = true
+			break
+		}
+	}
+	if !clientProgramAttachedToRoutedIface {
+		return fmt.Errorf("Client program not attached to routed interface")
+	}
+
+	clientInf.Teid = teid
+	clientInf.UpfIP = ip2int(upfIP)
+	clientInf.EthNextHop = [6]uint8(hwAddr)
+	clientInf.EthLocal = [6]uint8(routedIface.HardwareAddr)
+	clientInf.Ifindex = uint32(routedIface.Index)
+
+	xdpgtp.clientInfoMap[ip2int(clientIP)] = clientInf
+
+	err = xdpgtp.objs.ClientMap.Update(ip2int(clientIP), clientInf, ebpf.UpdateNoExist)
+	if err != nil {
+		return fmt.Errorf("Could not load client: %s", err)
+	}
+
+	return nil
+}
+
+func (xdpgtp XDPGTP) DeleteClient(clientIP net.IP) error {
+	err := xdpgtp.objs.ClientMap.Delete(ip2int(clientIP))
+	if err != nil {
+		return fmt.Errorf("Could not delete client: %s", err)
+	}
+
+	delete(xdpgtp.clientInfoMap, ip2int(clientIP))
+
+	return nil
+}
+
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target "bpf" gtp ../gtp.c -- -I../common -Wall -Werror
 
 func main() {
@@ -307,7 +541,7 @@ func main() {
 	// Load pre-compiled programs into the kernel.
 	objs := gtpObjects{}
 	if err := loadGtpObjects(&objs, nil); err != nil {
-		log.Fatalf("Error: Loading objects: %s", err)
+		log.Fatalf("Error: Could not load objects: %s", err)
 	}
 	defer objs.Close()
 
@@ -320,7 +554,7 @@ func main() {
 		// Look up the network interface by name.
 		iface, err := net.InterfaceByName(ifaceNamesSlice[0])
 		if err != nil {
-			log.Fatalf("Error: Lookup network iface %q: %s", ifaceNamesSlice[0], err)
+			log.Fatalf("Error: Looking up network iface %q failed: %s", ifaceNamesSlice[0], err)
 		}
 
 		// Attach the program.
@@ -343,13 +577,13 @@ func main() {
 		// Look up the client-facing interface by name.
 		clientIface, err = net.InterfaceByName(ifaceNamesSlice[0])
 		if err != nil {
-			log.Fatalf("Error: Lookup client-facing network iface %q: %s", ifaceNamesSlice[0], err)
+			log.Fatalf("Error: Looking up client-facing network iface %q failed: %s", ifaceNamesSlice[0], err)
 		}
 
 		// Look up the UPF-facing interface by name.
 		upfIface, err = net.InterfaceByName(ifaceNamesSlice[1])
 		if err != nil {
-			log.Fatalf("Error: Lookup UPF-facing network iface %q: %s", ifaceNamesSlice[0], err)
+			log.Fatalf("Error: Looking up UPF-facing network iface %q failed: %s", ifaceNamesSlice[0], err)
 		}
 
 		// Attach the client-facing program.
@@ -385,7 +619,7 @@ func main() {
 
 	clientInfMap, upfInfMap, err := populateClientUpfInfoMap(clients, clientIface, upfIface)
 	if err != nil {
-		log.Fatalf("Error: Populating client and UPF maps: %s", err)
+		log.Fatalf("Error: Could not populate client and UPF maps: %s", err)
 	}
 
 	log.Printf("Client and UPF maps populated")
