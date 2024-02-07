@@ -26,14 +26,8 @@ func (i *arrayFlags) Set(value string) error {
 	return nil
 }
 
-// Function for creating and populating ClientInfo and UpfInfo maps from an
-// array of flags in the form "ClientIP,TEID,UpfIP", and the client-facing and
-// UPF-facing interfaces.
-//
-// This function returns populated ClientInfo and  UpfInfo maps.
-func populateClientUpfInfoMap(xgtp *xdpgtp.XDPGTP, clients []string) error {
-
-	fmt.Println(clients)
+// Function for adding clients and UPFs to the XDPGTP program from an array of flags in the form "ClientIP,TEID,UpfIP"
+func addClientsAndUpfs(xgtp *xdpgtp.XDPGTP, clients []string) error {
 
 	for _, client := range clients {
 		ipTeidIp := strings.Split(client, ",")
@@ -58,8 +52,9 @@ func populateClientUpfInfoMap(xgtp *xdpgtp.XDPGTP, clients []string) error {
 			return fmt.Errorf("Invalid IP address: %s", ipTeidIp[2])
 		}
 
-		if !xgtp.UPFIsRegistered(parsedUpfIP) {
-			err = xgtp.AddUPF(parsedUpfIP)
+		// Register the UPF only if it is not currently present in the BPF map.
+		if !xgtp.UpfIsRegistered(parsedUpfIP) {
+			err = xgtp.AddUpf(parsedUpfIP)
 			if err != nil {
 				return err
 			}
@@ -73,7 +68,6 @@ func populateClientUpfInfoMap(xgtp *xdpgtp.XDPGTP, clients []string) error {
 		if err != nil {
 			return err
 		}
-
 	}
 
 	return nil
@@ -107,13 +101,12 @@ func main() {
 
 	xgtp, err := xdpgtp.NewXDPGTP(xdpFlags)
 	if err != nil {
-		log.Fatalf("TODO Error: Could not load objects: %s", err)
+		log.Fatalf("Error: Could not create new XDPGTP: %s", err)
 	}
 	defer xgtp.Close()
 
 	if len(ifaceNamesSlice) == 1 ||
 		(len(ifaceNamesSlice) == 2 && ifaceNamesSlice[0] == ifaceNamesSlice[1]) { // If client and UPF-facing interfaces are the same
-
 		// Look up the network interface by name.
 		commonIface, err := net.InterfaceByName(ifaceNamesSlice[0])
 		if err != nil {
@@ -123,74 +116,54 @@ func main() {
 		// Attach the program.
 		err = xgtp.AttachCommonProgramToInterface(commonIface.Index)
 		if err != nil {
-			log.Fatalf("TODO Error: Could not attach XDP program: %s", err)
+			log.Fatalf("TODO Error: Could not attach common XDP program: %s", err)
 		}
 		defer xgtp.DetachProgramFromInterface(commonIface.Index)
 
-		log.Printf("Attached XDP program to iface %q (index %d)", commonIface.Name, commonIface.Index)
+		log.Printf("Attached common XDP program to iface %q (index %d)", commonIface.Name, commonIface.Index)
 
 	} else if len(ifaceNamesSlice) == 2 { // If client and UPF-facing interfaces are different
-		// Look up the client-facing interface by name.
-		clientIface, err := net.InterfaceByName(ifaceNamesSlice[0])
-		if err != nil {
-			log.Fatalf("Error: Looking up client-facing network iface %q failed: %s", ifaceNamesSlice[0], err)
-		}
-
 		// Look up the UPF-facing interface by name.
 		upfIface, err := net.InterfaceByName(ifaceNamesSlice[1])
 		if err != nil {
 			log.Fatalf("Error: Looking up UPF-facing network iface %q failed: %s", ifaceNamesSlice[0], err)
 		}
 
-		// Attach the client-facing program.
-		err = xgtp.AttachClientFacingProgramToInterface(clientIface.Index)
+		// Look up the client-facing interface by name.
+		clientIface, err := net.InterfaceByName(ifaceNamesSlice[0])
 		if err != nil {
-			log.Fatalf("TODO Error: Could not attach XDP program: %s", err)
+			log.Fatalf("Error: Looking up client-facing network iface %q failed: %s", ifaceNamesSlice[0], err)
 		}
-		defer xgtp.DetachProgramFromInterface(clientIface.Index)
-
-		log.Printf("Attached client-facing XDP program to iface %q (index %d)", clientIface.Name, clientIface.Index)
 
 		// Attach the UPF-facing program.
 		err = xgtp.AttachUpfFacingProgramToInterface(upfIface.Index)
 		if err != nil {
-			log.Fatalf("TODO Error: Could not attach XDP program: %s", err)
+			log.Fatalf("Error: Could not attach UPF-facing XDP program: %s", err)
 		}
 		defer xgtp.DetachProgramFromInterface(upfIface.Index)
 
 		log.Printf("Attached UPF-facing XDP program to iface %q (index %d)", upfIface.Name, upfIface.Index)
+
+		// Attach the client-facing program.
+		err = xgtp.AttachClientFacingProgramToInterface(clientIface.Index)
+		if err != nil {
+			log.Fatalf("Error: Could not attach client-facing XDP program: %s", err)
+		}
+		defer xgtp.DetachProgramFromInterface(clientIface.Index)
+
+		log.Printf("Attached client-facing XDP program to iface %q (index %d)", clientIface.Name, clientIface.Index)
 	} else {
 		log.Fatalf("Error: Wrong number of argments for -i flag: %d", len(ifaceNamesSlice))
 	}
 
 	log.Printf("Press Ctrl-C to exit and remove the program")
 
-	err = populateClientUpfInfoMap(xgtp, clients)
+	err = addClientsAndUpfs(xgtp, clients)
 	if err != nil {
-		log.Fatalf("Error: Could not populate client and UPF maps: %s", err)
+		log.Fatalf("Error: Could not add clients and UPFs: %s", err)
 	}
 
-	log.Printf("Client and UPF maps populated")
-
-	// // Load UPF map in the XDP program.
-	// for key, value := range upfInfMap {
-	// 	err = objs.UpfMap.Put(key, value)
-	// 	if err != nil {
-	// 		log.Fatalf("Error: Could not load UPF with IP %v: %s", int2ip(key), err)
-	// 	}
-	// }
-
-	log.Printf("UPFs' map loaded")
-
-	// // Load client map in the XDP program.
-	// for key, value := range clientInfMap {
-	// 	err = objs.ClientMap.Put(key, value)
-	// 	if err != nil {
-	// 		log.Fatalf("Error: Could not load client with IP %v: %s", int2ip(key), err)
-	// 	}
-	// }
-
-	log.Printf("Clients' map loaded")
+	log.Printf("Clients and UPFs loaded")
 
 	var oldStats [2]xdpgtp.UsageStats
 	ticker := time.NewTicker(1 * time.Second)
