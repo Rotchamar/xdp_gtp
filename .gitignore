@@ -2,4 +2,4 @@
 .vscode/*
 
 # build
-golang/xdp_gtp
+cmd/xdp_gtp/xdp_gtp

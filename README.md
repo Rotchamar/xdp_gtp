@@ -1,6 +1,6 @@
 # XDP_GTP
 
-XDP/eBPF program (with custom loader and CLI) for gNB-UPF GTP encapsulation.
+XDP/eBPF console utility and library (with custom loader) for gNB-UPF GTP encapsulation.
 
 ## Getting Started
 
@@ -9,7 +9,7 @@ XDP/eBPF program (with custom loader and CLI) for gNB-UPF GTP encapsulation.
 - Golang >= 1.21.4 (not yet tested with prior versions)
 - Linux >= 5.19.0 (not yet tested with prior versions)
 
-### Installing
+### Installing the executable
 
 Clone the repo:
 
@@ -20,12 +20,13 @@ git clone https://github.com/Rotchamar/xdp_gtp
 Build main executable:
 
 ```
+cd ./cmd/xdp_gtp
 go build
 ```
 
-## Deployment & Usage
+## Deployment & Usage of the command line application
 
-The executable file `/golang/xdp_gtp` will be used to start the application. 
+The executable file `/cmd/xdp_gtp/xdp_gtp` will be used to start the application. 
 XDP_GTP includes several flags to adapt to different scenarios, information on these is accessible through the `-h` flag:
 
 ```
@@ -63,12 +64,12 @@ sudo ip route add default via 10.0.2.1
 
 - AGF/UPF A:
 ```
-sudo ./golang/xdp_gtp -i eth0,eth1 -c 10.0.1.10,1,10.0.100.20
+sudo ./cmd/xdp_gtp/xdp_gtp -i eth0,eth1 -c 10.0.1.10,1,10.0.100.20
 ```
 
 - AGF/UPF B:
 ```
-sudo ./golang/xdp_gtp -i eth0,eth1 -c 10.0.2.10,1,10.0.100.10
+sudo ./cmd/xdp_gtp/xdp_gtp -i eth0,eth1 -c 10.0.2.10,1,10.0.100.10
 ```
 
 If VMs 2 and 3's support XDP in driver or hardware offload mode, use `-m driver` or `-m offload` for better performance.
@@ -95,7 +96,7 @@ sudo apt install clang llvm libelf-dev libbpf-dev libc6-dev-i386
 This step makes use of Cilium's `bpf2go` program which is called with `go generate`.
 
 ```
-cd ./golang
+cd ./xdpgtp
 go generate
 ```
 

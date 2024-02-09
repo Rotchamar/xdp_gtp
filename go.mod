@@ -1,4 +1,4 @@
-module xdp_gtp
+module github.com/Rotchamar/xdp_gtp
 
 go 1.21.4
 

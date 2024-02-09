@@ -245,6 +245,12 @@ xdp_gtp_common(struct xdp_md* ctx)
       goto out;
     }
 
+    action = bpf_redirect(ifindex, 0);
+
+    if (action != XDP_REDIRECT) {
+      goto out;
+    }
+
     /* Update information on transmitted package and byte count. */
     value = bpf_map_lookup_elem(&txcnt, &client2upf_txcnt_key);
     if (value) {
@@ -252,7 +258,6 @@ xdp_gtp_common(struct xdp_md* ctx)
       value->bytes += (__u64)(data_end - data);
     }
 
-    action = XDP_TX;
     goto out;
   }
 
@@ -281,7 +286,14 @@ xdp_gtp_common(struct xdp_md* ctx)
     goto out;
   }
 
-  if (pop_gtp(ctx, &nh, data, data_end)) {
+  ifindex = pop_gtp(ctx, &nh, data, data_end);
+  if (ifindex == 0) {
+    goto out;
+  }
+
+  action = bpf_redirect(ifindex, 0);
+
+  if (action != XDP_REDIRECT) {
     goto out;
   }
 
@@ -291,8 +303,6 @@ xdp_gtp_common(struct xdp_md* ctx)
     value->packets += 1;
     value->bytes += (__u64)(data_end - data);
   }
-
-  action = XDP_TX;
 
 out:
   return action;
@@ -424,7 +434,7 @@ xdp_gtp_upf(struct xdp_md* ctx)
 
   action = bpf_redirect(ifindex, 0);
 
-  if (action == XDP_REDIRECT) {
+  if (action != XDP_REDIRECT) {
     goto out;
   }
 
@@ -439,4 +449,4 @@ out:
   return action;
 }
 
-char _license[] SEC("license") = "GPL";
+char _license[] SEC("license") = "MIT";
