@@ -81,13 +81,6 @@ func int2ip(nn uint32) net.IP {
 	return ip
 }
 
-// Convert uint32 from host to network byte order.
-func htonl(i uint32) uint32 {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, i)
-	return binary.BigEndian.Uint32(b)
-}
-
 // NewXDPGTP loads compiled eBPF programs and maps into the kernel and returns a new XDPGTP.
 //
 // Users must call x.Close() to safely unload eBPF programs and maps from the kernel.
@@ -96,7 +89,7 @@ func NewXDPGTP(xdpFlags link.XDPAttachFlags) (*XDPGTP, error) {
 
 	x.objs = gtpObjects{}
 	if err := loadGtpObjects(&x.objs, nil); err != nil {
-		return nil, fmt.Errorf("Could not load objects: %s", err)
+		return nil, fmt.Errorf("could not load objects: %s", err)
 	}
 
 	x.xdpFlags = xdpFlags
@@ -116,7 +109,7 @@ func (x XDPGTP) Close() error {
 func (x XDPGTP) attachProgramToInterface(ifindex int, program *ebpf.Program, mode xdpgtpMode) error {
 	ifaceStatus, ok := x.ifaces[ifindex]
 	if ok && ifaceStatus.mode != xdpgtpNone {
-		return fmt.Errorf("An XDP program is already attached to this interface")
+		return fmt.Errorf("XDP program already attached to interface")
 	}
 
 	var err error
@@ -127,7 +120,7 @@ func (x XDPGTP) attachProgramToInterface(ifindex int, program *ebpf.Program, mod
 		Flags:     x.xdpFlags,
 	})
 	if err != nil {
-		return fmt.Errorf("Could not attach XDP program: %s", err)
+		return fmt.Errorf("could not attach XDP program: %s", err)
 	}
 
 	ifaceStatus.mode = mode
@@ -177,7 +170,7 @@ func (x XDPGTP) DetachProgramFromInterface(ifindex int) error {
 	ifaceStatus, ok := x.ifaces[ifindex]
 
 	if !ok || ifaceStatus.mode == xdpgtpNone {
-		return fmt.Errorf("Interface doesn't have any program attached")
+		return fmt.Errorf("no program attached to interface")
 	}
 
 	ifaceStatus.xdpLink.Close()
@@ -192,7 +185,7 @@ func (x XDPGTP) AddUpf(upfIP net.IP) error {
 
 	routedIface, hwAddr, localIP, err := getEndpointAddrs(upfIP)
 	if err != nil {
-		return fmt.Errorf("Could not acquire UPF-related addresses: %s", err)
+		return fmt.Errorf("could not acquire UPF-related addresses: %s", err)
 	}
 
 	// Check whether the interface through which the UPF is routed has a UPF-facing or common XGPGTP eBPF program attached.
@@ -216,7 +209,7 @@ func (x XDPGTP) AddUpf(upfIP net.IP) error {
 
 	err = x.objs.UpfMap.Update(ip2int(upfIP), upfInf, ebpf.UpdateNoExist)
 	if err != nil {
-		return fmt.Errorf("Could not load UPF: %s", err)
+		return fmt.Errorf("could not load UPF: %s", err)
 	}
 
 	return nil
@@ -228,12 +221,12 @@ func (x XDPGTP) AddClient(clientIP net.IP, teid uint32, upfIP net.IP) error {
 
 	// Check whether the UPF indicated has been previously added to the BPF maps.
 	if !x.UpfIsRegistered(upfIP) {
-		return fmt.Errorf("Assigned UPF has not been previously registered")
+		return fmt.Errorf("assigned UPF has not been previously registered")
 	}
 
 	routedIface, hwAddr, _, err := getEndpointAddrs(clientIP)
 	if err != nil {
-		return fmt.Errorf("Could not acquire client-related addresses: %s", err)
+		return fmt.Errorf("could not acquire client-related addresses: %s", err)
 	}
 
 	// Check whether the interface through which the client is routed has a client-facing or common XGPGTP eBPF program attached.
@@ -245,7 +238,7 @@ func (x XDPGTP) AddClient(clientIP net.IP, teid uint32, upfIP net.IP) error {
 		}
 	}
 	if !clientProgramAttachedToRoutedIface {
-		return fmt.Errorf("Client program not attached to routed interface")
+		return fmt.Errorf("client program not attached to routed interface")
 	}
 
 	clientInf.teid = teid
@@ -258,7 +251,7 @@ func (x XDPGTP) AddClient(clientIP net.IP, teid uint32, upfIP net.IP) error {
 
 	err = x.objs.ClientMap.Update(ip2int(clientIP), clientInf, ebpf.UpdateNoExist)
 	if err != nil {
-		return fmt.Errorf("Could not load client: %s", err)
+		return fmt.Errorf("could not load client: %s", err)
 	}
 
 	return nil
@@ -299,13 +292,13 @@ func (x XDPGTP) RemoveUpf(upfIP net.IP) error {
 		for idx, blockingIP := range blockingClients {
 			blockingClientsStr[idx] = blockingIP.String()
 		}
-		return fmt.Errorf("Could not delete UPF, %d clients depend on this UPF: %s",
+		return fmt.Errorf("could not delete UPF, %d clients depend on this UPF: %s",
 			len(blockingClients), strings.Join(blockingClientsStr, ", "))
 	}
 
 	err := x.objs.UpfMap.Delete(ip2int(upfIP))
 	if err != nil {
-		return fmt.Errorf("Could not delete UPF: %s", err)
+		return fmt.Errorf("could not delete UPF: %s", err)
 	}
 
 	delete(x.upfInfoMap, ip2int(upfIP))
@@ -317,7 +310,7 @@ func (x XDPGTP) RemoveUpf(upfIP net.IP) error {
 func (x XDPGTP) RemoveClient(clientIP net.IP) error {
 	err := x.objs.ClientMap.Delete(ip2int(clientIP))
 	if err != nil {
-		return fmt.Errorf("Could not delete client: %s", err)
+		return fmt.Errorf("could not delete client: %s", err)
 	}
 
 	delete(x.clientInfoMap, ip2int(clientIP))
@@ -348,6 +341,35 @@ func (x XDPGTP) GetUsageStats() ([2]UsageStats, error) {
 	}
 
 	return totalStats, nil
+}
+
+func (x XDPGTP) GetUpfs() []net.IP {
+	upfs := make([]net.IP, len(x.upfInfoMap))
+
+	i := 0
+	for upf := range x.upfInfoMap {
+		upfs[i] = int2ip(upf)
+		i++
+	}
+	return upfs
+}
+
+func (x XDPGTP) GetClients() ([]net.IP, []uint32, []net.IP) {
+	clientInfoMapLen := len(x.clientInfoMap)
+
+	clients := make([]net.IP, clientInfoMapLen)
+	teids := make([]uint32, clientInfoMapLen)
+	upfs := make([]net.IP, clientInfoMapLen)
+
+	i := 0
+	for client, clientInf := range x.clientInfoMap {
+		clients[i] = int2ip(client)
+		teids[i] = clientInf.teid
+		upfs[i] = int2ip(clientInf.upfIP)
+		i++
+	}
+
+	return clients, teids, upfs
 }
 
 // This Function reports whether an IP address is reachable with an ICMP echo request.
