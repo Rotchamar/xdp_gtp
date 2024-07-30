@@ -33,12 +33,12 @@ func addClientsAndUpfs(xgtp *xdpgtp.XDPGTP, clients []string) error {
 		ipTeidIp := strings.Split(client, ",")
 
 		if len(ipTeidIp) != 3 {
-			return fmt.Errorf("Wrong number of client parameters")
+			return fmt.Errorf("wrong number of client parameters")
 		}
 
 		parsedClientIP := net.ParseIP(ipTeidIp[0])
 		if parsedClientIP == nil {
-			return fmt.Errorf("Invalid IP address: %s", ipTeidIp[0])
+			return fmt.Errorf("invalid IP address: %s", ipTeidIp[0])
 		}
 
 		// Parse the teid string to a base-10 32-bit uint
@@ -49,7 +49,7 @@ func addClientsAndUpfs(xgtp *xdpgtp.XDPGTP, clients []string) error {
 
 		parsedUpfIP := net.ParseIP(ipTeidIp[2])
 		if parsedUpfIP == nil {
-			return fmt.Errorf("Invalid IP address: %s", ipTeidIp[2])
+			return fmt.Errorf("invalid IP address: %s", ipTeidIp[2])
 		}
 
 		// Register the UPF only if it is not currently present in the BPF map.
@@ -61,7 +61,7 @@ func addClientsAndUpfs(xgtp *xdpgtp.XDPGTP, clients []string) error {
 		}
 
 		if xgtp.ClientIsRegistered(parsedClientIP) {
-			return fmt.Errorf("Client with IP address %s is duplicated", ipTeidIp[0])
+			return fmt.Errorf("client with IP address %s is duplicated", ipTeidIp[0])
 		}
 
 		err = xgtp.AddClient(parsedClientIP, uint32(teid), parsedUpfIP)
@@ -116,7 +116,7 @@ func main() {
 		// Attach the program.
 		err = xgtp.AttachCommonProgramToInterface(commonIface.Index)
 		if err != nil {
-			log.Fatalf("TODO Error: Could not attach common XDP program: %s", err)
+			log.Fatalf("Error: Could not attach common XDP program: %s", err)
 		}
 		defer xgtp.DetachProgramFromInterface(commonIface.Index)
 
